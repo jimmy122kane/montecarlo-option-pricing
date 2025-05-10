@@ -2,6 +2,9 @@
 
 This project uses Monte Carlo simulation in R to price European-style call and put options. It compares results with the Black-Scholes model, estimates the Greeks (Delta, Vega, Theta, Gamma, Rho), and includes visualizations like stock path plots, histograms, and heatmaps.
 
+## 🧠 Why This Project?
+As an aspiring quant, I wanted to build something that combines core finance theory with hands-on simulation. This model helped me understand option pricing mechanics, randomness in markets, and the value of visual diagnostics.
+
 ## 📊 Model Features
 - Monte Carlo simulation using GBM  
 - Antithetic variance reduction  
