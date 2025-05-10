@@ -35,6 +35,7 @@ As an aspiring quant, I wanted to build something that combines core finance the
 Jimmy Kane – [LinkedIn](https://www.linkedin.com/in/jimmy-kane-72795720a/)
 
 ## 📄 View Report
-- 🔗 [Live Report on GitHub Pages](https://jimmy122kane.github.io/montecarlo-option-pricing/)
-- 📄 [Source Code (R Markdown)](https://github.com/jimmy122kane/montecarlo-option-pricing/blob/main/MonteCarlo.Rmd)
+- Click to see the full output: [Live Report on GitHub Pages](https://jimmy122kane.github.io/montecarlo-option-pricing/MonteCarlo.html)  
+- Click to view the full source code: [MonteCarlo.Rmd](MonteCarlo.Rmd)
+
 
