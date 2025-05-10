@@ -32,5 +32,5 @@ This project uses Monte Carlo simulation in R to price European-style call and p
 Jimmy Kane – [LinkedIn](https://www.linkedin.com/in/jimmy-kane-72795720a/)
 
 ## 📄 View Report
-- Click to see the full output: [Rendered HTML Report](montecarlo.html)  
-- Click to view the full source code: [montecarlo.Rmd](montecarlo.Rmd)
+- Click to see the full output: [Rendered HTML Report](MonteCarlo.html)  
+- Click to view the full source code: [montecarlo.Rmd](MonteCarlo.Rmd)
