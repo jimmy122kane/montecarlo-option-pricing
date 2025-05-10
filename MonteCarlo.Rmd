@@ -1,0 +1,275 @@
+---
+title: "Monte Carlo Simulation for Option Pricing"
+author: "Jimmy Kane"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+    df_print: kable
+params:
+  stock_ticker: "AAPL"
+  K: 105
+  T: 1
+  r: 0.05
+---
+
+## 📘 Abstract
+This project prices European-style options using Monte Carlo simulation in R. The model simulates asset prices using Geometric Brownian Motion, estimates option prices and Greeks, compares results to the Black-Scholes formula, and visualizes sensitivity through heatmaps and path charts. It supports any stock ticker and includes variance reduction, dynamic parameters, a more reliable method of retrieving implied volatility via `tidyquant`, and additional Greeks (Theta, Gamma, Rho). Assumptions for this model are the following:
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(quantmod)
+library(tidyquant)
+library(stats)
+```
+
+```{r Model Assumptions, echo=FALSE}
+
+assumptions <- c(
+  "📈 The stock price follows Geometric Brownian Motion (GBM) with constant volatility.",
+  "💵 The risk-free interest rate remains constant throughout the option's life.",
+  "🧾 There are no transaction costs, taxes, or dividend payments.",
+  "📊 Markets are frictionless, and trading can occur continuously.",
+  "⏳ The option is European-style and can only be exercised at expiration.",
+  "🔁 Stock returns are normally distributed and independent over time.",
+  "🎲 Antithetic variates are used to reduce simulation variance."
+)
+
+df <- data.frame(`Model Assumptions` = assumptions)
+
+knitr::kable(df) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## 🔧 Step 1: Define Inputs
+We extract user-specified parameters from the YAML header including the stock ticker, strike price, time to maturity, and risk-free rate. We also define the number of simulations and time steps for the Monte Carlo simulation.
+
+```{r define-inputs}
+stock_ticker <- params$stock_ticker
+K <- params$K
+T <- params$T
+r <- params$r
+n_sim <- 10000
+n_steps <- 252
+```
+
+## 💻 Step 2: Fetch Stock Price and Implied Volatility
+We use `tidyquant` to get the latest closing price and approximate implied volatility from options data filtered to the nearest strike and expiry. This is more robust than scraping HTML from Yahoo Finance.
+
+```{r get-stock-price-volatility}
+data <- tq_get(stock_ticker)
+S0 <- last(data$close)
+
+option_chain <- tryCatch(getOptionChain(stock_ticker, NULL), error = function(e) NULL)
+
+if (!is.null(option_chain) && !is.null(option_chain$calls)) {
+  call_chain <- option_chain$calls
+  atm_call <- call_chain[which.min(abs(call_chain$Strike - S0)), ]
+  iv_sigma <- as.numeric(atm_call$ImpliedVolatility)
+} else {
+  warning("Options data unavailable. Using fallback sigma = 0.2")
+  iv_sigma <- 0.2
+}
+
+
+
+stock_info <- tibble(
+  Parameter = c("Stock Ticker", "Initial Price", "Strike Price", "Implied Volatility", "Time to Maturity", "Risk-Free Rate"),
+  Value = c(stock_ticker, round(S0, 2), K, round(iv_sigma, 4), T, r)
+)
+
+kable(stock_info, caption = "Simulation Parameters with Implied Volatility") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## 📈 Step 3: Simulate GBM Paths (with Variance Reduction)
+We simulate stock price paths using Geometric Brownian Motion. Antithetic variates are included for variance reduction, producing two mirrored sets of paths to improve simulation efficiency.
+
+```{r simulate-fn}
+set.seed(123)
+simulate_paths <- function(S0, sigma, T, r, n_sim, n_steps) {
+  dt <- T / n_steps
+  Z <- matrix(rnorm(n_sim * n_steps), nrow = n_sim)
+  Z_anti <- -Z
+
+  simulate <- function(Z_mat) {
+    S <- matrix(0, n_sim, n_steps + 1)
+    S[, 1] <- S0
+    for (t in 1:n_steps) {
+      S[, t + 1] <- S[, t] * exp((r - 0.5 * sigma^2) * dt + sigma * sqrt(dt) * Z_mat[, t])
+    }
+    return(S)
+  }
+
+  list(norm = simulate(Z), anti = simulate(Z_anti))
+}
+
+paths <- simulate_paths(S0, iv_sigma, T, r, n_sim, n_steps)
+```
+
+```{r simulate-preview-plot, fig.height=3.5}
+preview_df <- data.frame(Time = 1:n_steps, Price = paths$norm[1, 2:(n_steps+1)])
+ggplot(preview_df, aes(x = Time, y = Price)) +
+  geom_line(color = "steelblue") +
+  labs(title = paste("Single GBM Path for", stock_ticker), x = "Time (Days)", y = "Price") +
+  theme_minimal()
+```
+
+## 🖼️ Step 4: Visualize 10 Sample Paths
+We show 10 randomly simulated stock price paths to illustrate the variability and possible trajectories under GBM.
+
+```{r visualize-paths}
+sample_df <- as.data.frame(t(paths$norm[1:10, ]))
+sample_df$Time <- 0:n_steps
+long_df <- pivot_longer(sample_df, cols = -Time, names_to = "Path", values_to = "Price")
+
+ggplot(long_df, aes(x = Time, y = Price, color = Path)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = paste("10 Simulated GBM Paths for", stock_ticker), x = "Time (days)", y = "Price") +
+  theme(legend.position = "none")
+
+```
+
+## 💵 Step 5: Calculate Option Payoffs
+We compute the payoffs for both call and put options using the terminal values of the simulated paths. We also apply discounting and compute confidence intervals.
+
+```{r payoffs}
+S_T <- paths$norm[, n_steps + 1]
+S_T_anti <- paths$anti[, n_steps + 1]
+
+call_payoff <- 0.5 * (pmax(S_T - K, 0) + pmax(S_T_anti - K, 0))
+put_payoff  <- 0.5 * (pmax(K - S_T, 0) + pmax(K - S_T_anti, 0))
+
+call_price <- exp(-r * T) * mean(call_payoff)
+put_price  <- exp(-r * T) * mean(put_payoff)
+
+call_se <- sd(call_payoff) / sqrt(n_sim)
+put_se <- sd(put_payoff) / sqrt(n_sim)
+call_CI <- call_price + c(-1.96, 1.96) * call_se
+put_CI <- put_price + c(-1.96, 1.96) * put_se
+```
+
+## 📉 Step 6: Histogram of Final Prices
+
+```{r Histogram of Final Prices}
+
+ggplot(data.frame(ST = S_T), aes(x = ST)) +
+  geom_histogram(bins = 50, fill = "skyblue", color = "white") +
+  labs(title = "Histogram of Terminal Stock Prices", x = "S(T)", y = "Frequency") +
+  theme_minimal()
+
+```
+
+The histogram above shows the distribution of stock prices at maturity S(T) based on the simulated paths. It demonstrates the positively skewed nature of the lognormal distribution assumed by Geometric Brownian Motion (GBM). Most of the final prices cluster around the mean, but the long right tail reflects the possibility of large gains—capturing the randomness and asymmetric nature of stock price behavior.
+
+## 📐 Step 7: Compare with Black-Scholes Formula
+We compute the Black-Scholes analytical price for the call and put options as a benchmark.
+
+```{r bsm-comparison}
+bs_call <- function(S, K, T, r, sigma) {
+  d1 <- (log(S/K) + (r + 0.5 * sigma^2)*T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  S * pnorm(d1) - K * exp(-r * T) * pnorm(d2)
+}
+
+bs_put <- function(S, K, T, r, sigma) {
+  d1 <- (log(S/K) + (r + 0.5 * sigma^2)*T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  K * exp(-r * T) * pnorm(-d2) - S * pnorm(-d1)
+}
+
+bs_call_price <- bs_call(S0, K, T, r, iv_sigma)
+bs_put_price <- bs_put(S0, K, T, r, iv_sigma)
+
+```
+
+## 🧠 Step 8: Estimate Greeks (Delta, Vega, Theta, Gamma, Rho)
+We estimate the option Greeks using finite differences based on the Black-Scholes model. These metrics help quantify the sensitivity of the option price to different factors:
+- **Delta**: change in price per $1 move in the stock
+- **Vega**: change in price per 1% change in volatility
+- **Theta**: change in price per day passed
+- **Gamma**: rate of change of Delta
+- **Rho**: change in price per 1% change in interest rate
+
+
+```{r greeks}
+eps <- 0.01
+
+Delta <- (bs_call(S0 + eps, K, T, r, iv_sigma) - bs_call(S0 - eps, K, T, r, iv_sigma)) / (2 * eps)
+Vega  <- (bs_call(S0, K, T, r, iv_sigma + eps) - bs_call(S0, K, T, r, iv_sigma - eps)) / (2 * eps)
+Theta <- (bs_call(S0, K, T - eps, r, iv_sigma) - bs_call(S0, K, T + eps, r, iv_sigma)) / (2 * eps)
+Gamma <- (bs_call(S0 + eps, K, T, r, iv_sigma) - 2 * bs_call(S0, K, T, r, iv_sigma) + bs_call(S0 - eps, K, T, r, iv_sigma)) / (eps^2)
+Rho   <- (bs_call(S0, K, T, r + eps, iv_sigma) - bs_call(S0, K, T, r - eps, iv_sigma)) / (2 * eps)
+```
+
+## 📊 Step 9: Heatmap of Simulated Call Prices
+We simulate option prices across a grid of S0 and volatility values to understand how the call price reacts to changes in input assumptions.
+
+```{r heatmap, fig.height=6, fig.width=8}
+S0_vals <- seq(S0 * 0.8, S0 * 1.2, by = 5)
+sigma_vals <- seq(0.1, 0.5, by = 0.05)
+grid <- expand.grid(S0 = S0_vals, sigma = sigma_vals)
+grid$price <- mapply(function(S0_i, sigma_i) {
+  ST <- S0_i * exp((r - 0.5 * sigma_i^2) * T + sigma_i * sqrt(T) * rnorm(1000))
+  exp(-r * T) * mean(pmax(ST - K, 0))
+}, grid$S0, grid$sigma)
+grid$label <- round(grid$price, 2)
+
+ggplot(grid, aes(x = S0, y = sigma, fill = price)) +
+  geom_tile() +
+  geom_text(aes(label = label), size = 2.8) +
+  scale_fill_gradient2(low = "red", high = "green", midpoint = median(grid$price), name = "Call Price") +
+  labs(title = "Simulated Call Price Heatmap", x = "Initial Price (S0)", y = "Volatility") +
+  theme_minimal()
+```
+
+## 📋 Step 10: Results Summary
+We summarize all model outputs including Monte Carlo and BSM prices, confidence intervals, and Greeks. The table below compares Monte Carlo and Black-Scholes prices, and lists the Greeks (Delta, Vega, Theta, Gamma, Rho) for the call option. These values help understand how sensitive the option’s price is to changes in various input parameters.
+
+```{r summary-table}
+summary_tbl <- tibble(
+  Metric = c("Monte Carlo Call Price", "95% CI (Call)", "BSM Call Price",
+             "Monte Carlo Put Price", "95% CI (Put)", "BSM Put Price",
+             "Delta", "Vega", "Theta", "Gamma", "Rho"),
+  Value = c(
+    round(call_price, 4),
+    paste0("[", round(call_CI[1], 4), ", ", round(call_CI[2], 4), "]"),
+    round(bs_call_price, 4),
+    round(put_price, 4),
+    paste0("[", round(put_CI[1], 4), ", ", round(put_CI[2], 4), "]"),
+    round(bs_put_price, 4),
+    round(Delta, 4), round(Vega, 4), round(Theta, 4), round(Gamma, 4), round(Rho, 4)
+  )
+)
+kable(summary_tbl, caption = paste("Option Pricing Summary for", stock_ticker)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## ✅ Conclusion
+This project provides a robust Monte Carlo framework for pricing options, complete with visual diagnostics, theoretical comparisons, and sensitivity metrics using real implied volatility data.
+
+## 🔮 Future Work
+- Add American options (binomial or finite difference methods)
+- Create a Shiny dashboard for user interaction
+- Support exotic options like barriers or Asians
+- Export results to downloadable `.csv` or `.png`
+
+## 🧾 Glossary
+- **GBM** – Geometric Brownian Motion, a model for stock prices.
+- **Delta** – Sensitivity of option price to the stock price.
+- **Vega** – Sensitivity to volatility.
+- **Theta** – Sensitivity to time decay.
+- **Gamma** – Sensitivity of Delta to price changes.
+- **Rho** – Sensitivity to interest rates.
+- **Risk-neutral measure** – Assumes expected return is the risk-free rate.
+- **Antithetic variates** – A variance reduction technique in simulation.
